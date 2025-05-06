@@ -3,7 +3,7 @@ import MLX
 import Foundation
 
 @main
-struct Demucs: ParsableCommand {
+struct Main: ParsableCommand {
   @Option
   var modelPath = "/tmp/mlx/demucs.safetensors"
 
