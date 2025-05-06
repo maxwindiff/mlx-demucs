@@ -13,6 +13,9 @@ struct Main: ParsableCommand {
       for key in arrays.keys.sorted() {
         print("- \(key)")
       }
+      let model = DemucsModel()
+      eval(model)
+      print(model)
     } catch {
       print("Error loading model: \(error)")
     }
