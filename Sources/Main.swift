@@ -5,23 +5,16 @@ import Foundation
 @main
 struct Demucs: ParsableCommand {
   @Option
-  var model = "demucs_quantized"
+  var modelPath = "/tmp/mlx/demucs.safetensors"
 
   mutating func run() {
-    let fileManager = FileManager.default
-    let homeDir = fileManager.homeDirectoryForCurrentUser
-    let checkpointsDir = homeDir.appendingPathComponent(".cache/torch/hub/checkpoints")
-    print("Searching for model files in \(checkpointsDir.path)")
-
     do {
-      let directoryContents = try fileManager.contentsOfDirectory(atPath: checkpointsDir.path)
-      for file in directoryContents {
-        if file.hasPrefix("\(model)-") {
-          print(file)
-        }
+      let arrays = try loadArrays(url: URL(fileURLWithPath: modelPath))
+      for key in arrays.keys.sorted() {
+        print("- \(key)")
       }
     } catch {
-      print("Error searching for model files: \(error.localizedDescription)")
+      print("Error loading model: \(error)")
     }
   }
 }
