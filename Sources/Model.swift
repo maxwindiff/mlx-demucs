@@ -2,19 +2,6 @@ import Foundation
 import MLX
 import MLXNN
 
-class GLU: Module, UnaryLayer {
-  let dim: Int
-
-  init(dim: Int) {
-    self.dim = dim
-  }
-
-  func callAsFunction(_ x: MLXArray) -> MLXArray {
-    let (a, b) = x.split(axis: dim)
-    return a * MLXNN.sigmoid(b)
-  }
-}
-
 class BLSTM: Module, UnaryLayer {
   let lstm: LSTM
   let linear: Linear
@@ -42,7 +29,7 @@ class EncoderBlock: Module, UnaryLayer {
     self.relu = ReLU()
     self.conv2 = Conv1d(
       inputChannels: outChannels, outputChannels: outChannels * 2, kernelSize: 1, stride: 1)
-    self.glu = GLU(dim: 1)
+    self.glu = GLU(axis: 1)
   }
 
   func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -57,14 +44,14 @@ class EncoderBlock: Module, UnaryLayer {
 class DecoderBlock: Module, UnaryLayer {
   let conv: Conv1d
   let glu: GLU
-  let convTranspose: Conv1d
+  let convTranspose: ConvTransposed1d
   let relu: ReLU?
 
   init(inChannels: Int, outChannels: Int, isLast: Bool = false) {
     self.conv = Conv1d(
       inputChannels: inChannels, outputChannels: inChannels * 2, kernelSize: 3, stride: 1)
-    self.glu = GLU(dim: 1)
-    self.convTranspose = Conv1d(
+    self.glu = GLU(axis: 1)
+    self.convTranspose = ConvTransposed1d(
       inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 4)
     self.relu = isLast ? nil : ReLU()
   }
