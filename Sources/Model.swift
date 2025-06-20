@@ -2,18 +2,97 @@ import Foundation
 import MLX
 import MLXNN
 
+class LSTM: Module {
+  public var weight_ih: MLXArray
+  public var weight_hh: MLXArray
+  public let bias_ih: MLXArray
+  public let bias_hh: MLXArray
+
+  public init(inputSize: Int, hiddenSize: Int, bias: Bool = true) {
+    let scale = 1 / sqrt(Float(hiddenSize))
+    self.weight_ih = MLXRandom.uniform(low: -scale, high: scale, [4 * hiddenSize, inputSize])
+    self.weight_hh = MLXRandom.uniform(low: -scale, high: scale, [4 * hiddenSize, hiddenSize])
+    self.bias_ih = MLXRandom.uniform(low: -scale, high: scale, [4 * hiddenSize])
+    self.bias_hh = MLXRandom.uniform(low: -scale, high: scale, [4 * hiddenSize])
+  }
+
+  func callAsFunction(_ x: MLXArray, hidden: MLXArray? = nil, cell: MLXArray? = nil) -> (
+    MLXArray, MLXArray
+  ) {
+    var x = x
+    x = addMM(bias_ih, x, weight_ih.T)
+
+    var hidden: MLXArray! = hidden
+    var cell: MLXArray! = cell
+    var allHidden = [MLXArray]()
+    var allCell = [MLXArray]()
+
+    for index in 0 ..< x.dim(-2) {
+      var ifgo = x[.ellipsis, index, 0...]
+      if hidden != nil {
+        ifgo = addMM(ifgo, hidden, weight_hh.T)
+      }
+      ifgo += bias_hh
+
+      let pieces = split(ifgo, parts: 4, axis: -1)
+
+      let i = sigmoid(pieces[0])
+      let f = sigmoid(pieces[1])
+      let g = tanh(pieces[2])
+      let o = sigmoid(pieces[3])
+
+      if cell != nil {
+        cell = f * cell + i * g
+      } else {
+        cell = i * g
+      }
+      hidden = o * tanh(cell)
+
+      allCell.append(cell)
+      allHidden.append(hidden)
+    }
+
+    return (
+      stacked(allHidden, axis: -2),
+      stacked(allCell, axis: -2)
+    )
+  }
+}
+
 class BLSTM: Module, UnaryLayer {
-  let lstm: LSTM
+  let forward: [LSTM]
+  let backward: [LSTM]
   let linear: Linear
 
-  init(inputSize: Int, hiddenSize: Int, numLayers: Int = 2) {
-    self.lstm = LSTM(inputSize: inputSize, hiddenSize: hiddenSize)
-    self.linear = Linear(hiddenSize * 2, hiddenSize)
+  init(inputSize: Int, numLayers: Int = 2) {
+    var forwardLayers = [LSTM]()
+    var backwardLayers = [LSTM]()
+    for i in 0..<numLayers {
+      if i == 0 {
+        forwardLayers.append(LSTM(inputSize: inputSize, hiddenSize: inputSize))
+        backwardLayers.append(LSTM(inputSize: inputSize, hiddenSize: inputSize))
+      } else {
+        forwardLayers.append(LSTM(inputSize: inputSize * 2, hiddenSize: inputSize))
+        backwardLayers.append(LSTM(inputSize: inputSize * 2, hiddenSize: inputSize))
+      }
+    }
+    self.forward = forwardLayers
+    self.backward = backwardLayers
+    self.linear = Linear(inputSize * 2, inputSize)
+  }
+
+  func reversed(_ x: MLXArray) -> MLXArray {
+    return x[.stride(by: -1)]
   }
 
   func callAsFunction(_ x: MLXArray) -> MLXArray {
-    let (lstmOut, _) = lstm(x)
-    return linear(lstmOut)
+    var hidden = x
+    for i in 0..<forward.count {
+      let forwardOut = forward[i](hidden).0
+      let backwardOut = reversed(backward[i](reversed(hidden)).0)
+      hidden = MLX.concatenated([forwardOut, backwardOut], axis: forwardOut.ndim - 1)
+    }
+    return linear(hidden)
   }
 }
 
@@ -29,7 +108,7 @@ class EncoderBlock: Module, UnaryLayer {
     self.relu = ReLU()
     self.conv2 = Conv1d(
       inputChannels: outChannels, outputChannels: outChannels * 2, kernelSize: 1, stride: 1)
-    self.glu = GLU(axis: 1)
+    self.glu = GLU(axis: 2)
   }
 
   func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -50,7 +129,7 @@ class DecoderBlock: Module, UnaryLayer {
   init(inChannels: Int, outChannels: Int, isLast: Bool = false) {
     self.conv = Conv1d(
       inputChannels: inChannels, outputChannels: inChannels * 2, kernelSize: 3, stride: 1)
-    self.glu = GLU(axis: 1)
+    self.glu = GLU(axis: 2)
     self.convTranspose = ConvTransposed1d(
       inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 4)
     self.relu = isLast ? nil : ReLU()
@@ -69,7 +148,7 @@ class DecoderBlock: Module, UnaryLayer {
 
 class DemucsModel: Module, UnaryLayer {
   let encoder: [EncoderBlock]
-  // let lstm: BLSTM
+  let lstm: BLSTM
   let decoder: [DecoderBlock]
 
   override init() {
@@ -81,7 +160,7 @@ class DemucsModel: Module, UnaryLayer {
       EncoderBlock(inChannels: 512, outChannels: 1024),
       EncoderBlock(inChannels: 1024, outChannels: 2048),
     ]
-    // self.lstm = BLSTM(inputSize: 2048, hiddenSize: 2048)
+    self.lstm = BLSTM(inputSize: 2048)
     self.decoder = [
       DecoderBlock(inChannels: 2048, outChannels: 1024),
       DecoderBlock(inChannels: 1024, outChannels: 512),
@@ -92,7 +171,44 @@ class DemucsModel: Module, UnaryLayer {
     ]
   }
 
+  func centerTrim(_ tensor: MLXArray, reference: MLXArray) -> MLXArray {
+    let referenceSize = reference.dim(-2)
+    let delta = tensor.dim(-2) - referenceSize
+    if delta < 0 {
+      fatalError("tensor must be larger than reference. Delta is \(delta).")
+    }
+    if delta == 0 {
+      return tensor
+    }
+    let startIdx = delta / 2
+    let endIdx = tensor.dim(-2) - (delta - delta / 2)
+    return tensor[.ellipsis, startIdx..<endIdx, 0...]
+  }
+
   public func callAsFunction(_ x: MLXArray) -> MLXArray {
+    var x = x
+    var saved = [MLXArray]()
+
+    for (i, encode) in encoder.enumerated() {
+      x = encode(x)
+      print("After encoder[\(i)]: \(x.shape)")
+      saved.append(x)
+    }
+
+    x = lstm(x)
+    print("After LSTM shape: \(x.shape)")
+
+    for (i, decode) in decoder.enumerated() {
+      let skip = centerTrim(saved.removeLast(), reference: x)
+      x = x + skip
+      x = decode(x)
+      print("After decoder[\(i)]: \(x.shape)")
+    }
+
+    var shape = x.shape
+    shape.removeLast()
+    shape += [4, 2]
+    x = x.reshaped(shape)
     return x
   }
 }
