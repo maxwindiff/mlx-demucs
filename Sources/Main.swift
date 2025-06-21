@@ -2,11 +2,93 @@ import ArgumentParser
 import MLX
 import MLXNN
 import Foundation
+import AVFoundation
 
 @main
 struct Main: ParsableCommand {
   @Option
   var modelPath = "/tmp/mlx/demucs.safetensors"
+
+  @Option
+  var input: String = "input.wav"
+
+  @Option
+  var outputDir: String = "output"
+
+  func loadWavFile(from path: String) throws -> MLXArray {
+    let url = URL(fileURLWithPath: path)
+    let audioFile = try AVAudioFile(forReading: url)
+
+    guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                     sampleRate: audioFile.fileFormat.sampleRate,
+                                     channels: 2,
+                                     interleaved: false) else {
+      throw NSError(domain: "AudioFormat", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio format"])
+    }
+
+    let frameCount = AVAudioFrameCount(audioFile.length)
+    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+      throw NSError(domain: "AudioBuffer", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio buffer"])
+    }
+
+    try audioFile.read(into: buffer)
+
+    guard let leftChannelData = buffer.floatChannelData?[0],
+          let rightChannelData = buffer.floatChannelData?[1] else {
+      throw NSError(domain: "AudioData", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get channel data"])
+    }
+
+    let sampleCount = Int(buffer.frameLength)
+    var audioData = [Float]()
+    audioData.reserveCapacity(sampleCount * 2)
+
+    for i in 0..<sampleCount {
+      audioData.append(leftChannelData[i])
+      audioData.append(rightChannelData[i])
+    }
+
+    let mlxArray = MLXArray(audioData, [1, sampleCount, 2])
+    return mlxArray
+  }
+
+  func saveWavFile(data: MLXArray, path: String, sampleRate: Double = 44100.0) throws {
+    let shape = data.shape
+    guard shape.count == 2 else {
+      throw NSError(domain: "AudioSave", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected 2D array [samples, channels]"])
+    }
+
+    let numSamples = shape[0]
+    let numChannels = shape[1]
+
+    guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                     sampleRate: sampleRate,
+                                     channels: AVAudioChannelCount(numChannels),
+                                     interleaved: false) else {
+      throw NSError(domain: "AudioFormat", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio format"])
+    }
+
+    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(numSamples)) else {
+      throw NSError(domain: "AudioBuffer", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio buffer"])
+    }
+
+    buffer.frameLength = AVAudioFrameCount(numSamples)
+
+    let audioData = data.asArray(Float.self)
+
+    for channel in 0..<numChannels {
+      guard let channelData = buffer.floatChannelData?[channel] else {
+        throw NSError(domain: "AudioData", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get channel data"])
+      }
+
+      for sample in 0..<numSamples {
+        channelData[sample] = audioData[sample * numChannels + channel]
+      }
+    }
+
+    let url = URL(fileURLWithPath: path)
+    let audioFile = try AVAudioFile(forWriting: url, settings: format.settings)
+    try audioFile.write(from: buffer)
+  }
 
   func loadModel(from path: String) throws -> DemucsModel {
     let weights = try loadArrays(url: URL(fileURLWithPath: path))
@@ -71,10 +153,39 @@ struct Main: ParsableCommand {
   mutating func run() {
     do {
       let model = try loadModel(from: modelPath)
-      let input = MLXArray.zeros([1, 894292, 2])
-      print("Input shape: \(input.shape)")
-      let output = model(input)
+
+      let data = try loadWavFile(from: input)
+      print("Input shape: \(data.shape)")
+      let output = model(data)
       print("Output shape: \(output.shape)")
+
+      let outputShape = output.shape
+      guard outputShape.count == 4 else {
+        throw NSError(domain: "OutputShape", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected output shape [1, samples, instruments, channels]"])
+      }
+
+      let numInstruments = outputShape[2]
+      let instrumentNames = ["drums", "bass", "other", "vocals"]
+
+      try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
+
+      for instrument in 0..<numInstruments {
+        let instrumentData = output[0, 0..., instrument, 0...]
+        let instrumentName = instrument < instrumentNames.count ? instrumentNames[instrument] : "instrument_\(instrument)"
+
+        let leftChannelData = instrumentData[0..., 0]
+        let rightChannelData = instrumentData[0..., 1]
+
+        let leftOutputPath = "\(outputDir)/\(instrumentName)_left.wav"
+        let rightOutputPath = "\(outputDir)/\(instrumentName)_right.wav"
+
+        try saveWavFile(data: leftChannelData.expandedDimensions(axis: 1), path: leftOutputPath)
+        try saveWavFile(data: rightChannelData.expandedDimensions(axis: 1), path: rightOutputPath)
+
+        print("Saved \(instrumentName) left channel to \(leftOutputPath)")
+        print("Saved \(instrumentName) right channel to \(rightOutputPath)")
+      }
+
     } catch {
       print("Error running model: \(error)")
     }
