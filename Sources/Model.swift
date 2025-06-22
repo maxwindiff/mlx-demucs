@@ -171,7 +171,7 @@ class DemucsModel: Module, UnaryLayer {
     ]
   }
 
-  public func validLength(_ length: Int, depth: Int = 6, kernelSize: Int = 8, context: Int = 3, stride: Int = 4) -> Int {
+  func idealLength(_ length: Int, depth: Int = 6, kernelSize: Int = 8, context: Int = 3, stride: Int = 4) -> Int {
     var length = length
 
     // Forward pass through layers
@@ -186,6 +186,15 @@ class DemucsModel: Module, UnaryLayer {
     }
 
     return length
+  }
+
+  // Pad the length so that no truncation happens during model execution.
+  func padInput(_ input: MLXArray) -> MLXArray {
+    let currentLength = input.shape[1]
+    let totalPadding = idealLength(currentLength) - currentLength
+    let leftPad = totalPadding / 2
+    let rightPad = totalPadding - leftPad
+    return MLX.concatenated([MLXArray.zeros([2, leftPad]), input, MLXArray.zeros([2, rightPad])], axis: 1)
   }
 
   func centerTrim(_ tensor: MLXArray, reference: MLXArray) -> MLXArray {
