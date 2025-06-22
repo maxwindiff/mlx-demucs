@@ -2,21 +2,8 @@ import Foundation
 import MLX
 import MLXNN
 
-func printTensorStats(_ tensor: MLXArray, name: String) {
-  let shape = tensor.shape
-  let mean = MLX.mean(tensor)
-  let variance = MLX.variance(tensor)
-  let firstElements = tensor[0, 0..<10, 0]
-  let elementValues = (0..<min(10, firstElements.size)).map { i in
-    String(format: "% .6f", firstElements[i].item(Float.self))
-  }
-  print("Tensor: \(name)")
-  print("  Shape: (\(shape.map(String.init).joined(separator: ", ")))")
-  print(String(format: "  Mean: %.6f, Variance: %.6f", mean.item(Float.self), variance.item(Float.self)))
-  print("  First elements: [\(elementValues.joined(separator: ", "))]")
-  print("--------------------------------------------------")
-}
-
+// Copied from https://github.com/ml-explore/mlx-swift/blob/0.25.4/Source/MLXNN/Recurrent.swift#L181
+// Added bias_hh and renamed weights to make importing from pytorch easier.
 class LSTM: Module {
   public var weight_ih: MLXArray
   public var weight_hh: MLXArray
@@ -24,11 +11,10 @@ class LSTM: Module {
   public let bias_hh: MLXArray
 
   public init(inputSize: Int, hiddenSize: Int, bias: Bool = true) {
-    let scale = 1 / sqrt(Float(hiddenSize))
-    self.weight_ih = MLXRandom.uniform(low: -scale, high: scale, [4 * hiddenSize, inputSize])
-    self.weight_hh = MLXRandom.uniform(low: -scale, high: scale, [4 * hiddenSize, hiddenSize])
-    self.bias_ih = MLXRandom.uniform(low: -scale, high: scale, [4 * hiddenSize])
-    self.bias_hh = MLXRandom.uniform(low: -scale, high: scale, [4 * hiddenSize])
+    self.weight_ih = MLXArray.zeros([4 * hiddenSize, inputSize])
+    self.weight_hh = MLXArray.zeros([4 * hiddenSize, hiddenSize])
+    self.bias_ih = MLXArray.zeros([4 * hiddenSize])
+    self.bias_hh = MLXArray.zeros([4 * hiddenSize])
   }
 
   func callAsFunction(_ x: MLXArray, hidden: MLXArray? = nil, cell: MLXArray? = nil) -> (
@@ -77,7 +63,7 @@ class LSTM: Module {
 class BLSTM: Module, UnaryLayer {
   let forward: [LSTM]
   let backward: [LSTM]
-  let linear: Linear
+  let linear: Linear?
 
   init(inputSize: Int, numLayers: Int = 2) {
     var forwardLayers = [LSTM]()
@@ -93,7 +79,7 @@ class BLSTM: Module, UnaryLayer {
     }
     self.forward = forwardLayers
     self.backward = backwardLayers
-    self.linear = Linear(inputSize * 2, inputSize)
+    self.linear = numLayers > 1 ? Linear(inputSize * 2, inputSize) : nil
   }
 
   func reversed(_ x: MLXArray) -> MLXArray {
@@ -101,16 +87,16 @@ class BLSTM: Module, UnaryLayer {
   }
 
   func callAsFunction(_ x: MLXArray) -> MLXArray {
-    var hidden = x
+    var x = x
     for i in 0..<forward.count {
-      let forwardOut = forward[i](hidden).0
-      let backwardOut = reversed(backward[i](reversed(hidden)).0)
-      hidden = MLX.concatenated([forwardOut, backwardOut], axis: -1)
+      let forwardOut = forward[i](x).0
+      let backwardOut = reversed(backward[i](reversed(x)).0)
+      x = MLX.concatenated([forwardOut, backwardOut], axis: -1)
     }
-    //printTensorStats(hidden, name: "After self.lstm")
-    let ret = linear(hidden)
-    //printTensorStats(ret, name: "After self.linear")
-    return ret
+    if let linear = linear {
+      x = linear(x)
+    }
+    return x
   }
 }
 
@@ -121,11 +107,9 @@ class EncoderBlock: Module, UnaryLayer {
   let glu: GLU
 
   init(inChannels: Int, outChannels: Int) {
-    self.conv1 = Conv1d(
-      inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 4)
+    self.conv1 = Conv1d(inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 4)
     self.relu = ReLU()
-    self.conv2 = Conv1d(
-      inputChannels: outChannels, outputChannels: outChannels * 2, kernelSize: 1, stride: 1)
+    self.conv2 = Conv1d(inputChannels: outChannels, outputChannels: outChannels * 2, kernelSize: 1, stride: 1)
     self.glu = GLU(axis: 2)
   }
 
@@ -145,11 +129,9 @@ class DecoderBlock: Module, UnaryLayer {
   let relu: ReLU?
 
   init(inChannels: Int, outChannels: Int, isLast: Bool = false) {
-    self.conv = Conv1d(
-      inputChannels: inChannels, outputChannels: inChannels * 2, kernelSize: 3, stride: 1)
+    self.conv = Conv1d(inputChannels: inChannels, outputChannels: inChannels * 2, kernelSize: 3, stride: 1)
     self.glu = GLU(axis: 2)
-    self.convTranspose = ConvTransposed1d(
-      inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 4)
+    self.convTranspose = ConvTransposed1d(inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 4)
     self.relu = isLast ? nil : ReLU()
   }
 
@@ -198,7 +180,6 @@ class DemucsModel: Module, UnaryLayer {
       length = max(1, length)
       length += context - 1
     }
-
     // Backward pass through layers
     for _ in 0..<depth {
       length = (length - 1) * stride + kernelSize
@@ -225,32 +206,19 @@ class DemucsModel: Module, UnaryLayer {
     var x = x
     var saved = [MLXArray]()
 
-    //print("\n=== Forward Pass Statistics ===")
-    //printTensorStats(x, name: "Input")
-
-    for (i, encode) in encoder.enumerated() {
+    for encode in encoder {
       x = encode(x)
-      //printTensorStats(x, name: "After encoder[\(i)]")
       saved.append(x)
     }
-
     x = lstm(x)
-    //printTensorStats(x, name: "After LSTM")
-
-    for (i, decode) in decoder.enumerated() {
+    for decode in decoder {
       let skip = centerTrim(saved.removeLast(), reference: x)
       x = x + skip
-      //printTensorStats(x, name: "After skip connection decoder[\(i)]")
       x = decode(x)
-      //printTensorStats(x, name: "After decoder[\(i)]")
     }
 
-    var shape = x.shape
-    shape.removeLast()
-    shape += [4, 2]
-    x = x.reshaped(shape)
-    print()
-
+    // Reshape to 4 sources x 2 channels
+    x = x.reshaped(x.shape.dropLast() + [4, 2])
     return x
   }
 }
