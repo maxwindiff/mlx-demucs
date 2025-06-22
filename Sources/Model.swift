@@ -2,6 +2,21 @@ import Foundation
 import MLX
 import MLXNN
 
+func printTensorStats(_ tensor: MLXArray, name: String) {
+  let shape = tensor.shape
+  let mean = MLX.mean(tensor)
+  let variance = MLX.variance(tensor)
+  let firstElements = tensor[0, 0..<10, 0]
+  let elementValues = (0..<min(10, firstElements.size)).map { i in
+    String(format: "% .6f", firstElements[i].item(Float.self))
+  }
+  print("Tensor: \(name)")
+  print("  Shape: (\(shape.map(String.init).joined(separator: ", ")))")
+  print(String(format: "  Mean: %.6f, Variance: %.6f", mean.item(Float.self), variance.item(Float.self)))
+  print("  First elements: [\(elementValues.joined(separator: ", "))]")
+  print("--------------------------------------------------")
+}
+
 class LSTM: Module {
   public var weight_ih: MLXArray
   public var weight_hh: MLXArray
@@ -82,7 +97,7 @@ class BLSTM: Module, UnaryLayer {
   }
 
   func reversed(_ x: MLXArray) -> MLXArray {
-    return x[.stride(by: -1)]
+    return x[.ellipsis, stride(by: -1), 0...]
   }
 
   func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -90,9 +105,12 @@ class BLSTM: Module, UnaryLayer {
     for i in 0..<forward.count {
       let forwardOut = forward[i](hidden).0
       let backwardOut = reversed(backward[i](reversed(hidden)).0)
-      hidden = MLX.concatenated([forwardOut, backwardOut], axis: forwardOut.ndim - 1)
+      hidden = MLX.concatenated([forwardOut, backwardOut], axis: -1)
     }
-    return linear(hidden)
+    //printTensorStats(hidden, name: "After self.lstm")
+    let ret = linear(hidden)
+    //printTensorStats(ret, name: "After self.linear")
+    return ret
   }
 }
 
@@ -203,43 +221,28 @@ class DemucsModel: Module, UnaryLayer {
     return tensor[.ellipsis, startIdx..<endIdx, 0...]
   }
 
-  func printTensorStats(_ tensor: MLXArray, name: String) {
-    let shape = tensor.shape
-    let mean = MLX.mean(tensor)
-    let variance = MLX.variance(tensor)
-    let firstElements = tensor[0, 0..<10, 0]
-    let elementValues = (0..<min(10, firstElements.size)).map { i in
-      String(format: "% .6f", firstElements[i].item(Float.self))
-    }
-    print("Tensor: \(name)")
-    print("  Shape: (\(shape.map(String.init).joined(separator: ", ")))")
-    print(String(format: "  Mean: %.6f, Variance: %.6f", mean.item(Float.self), variance.item(Float.self)))
-    print("  First elements: [\(elementValues.joined(separator: ", "))]")
-    print("--------------------------------------------------")
-  }
-
   public func callAsFunction(_ x: MLXArray) -> MLXArray {
     var x = x
     var saved = [MLXArray]()
 
-    print("\n=== Forward Pass Statistics ===")
-    printTensorStats(x, name: "Input")
+    //print("\n=== Forward Pass Statistics ===")
+    //printTensorStats(x, name: "Input")
 
     for (i, encode) in encoder.enumerated() {
       x = encode(x)
-      printTensorStats(x, name: "After encoder[\(i)]")
+      //printTensorStats(x, name: "After encoder[\(i)]")
       saved.append(x)
     }
 
     x = lstm(x)
-    printTensorStats(x, name: "After LSTM")
+    //printTensorStats(x, name: "After LSTM")
 
     for (i, decode) in decoder.enumerated() {
       let skip = centerTrim(saved.removeLast(), reference: x)
       x = x + skip
-      printTensorStats(x, name: "After skip connection decoder[\(i)]")
+      //printTensorStats(x, name: "After skip connection decoder[\(i)]")
       x = decode(x)
-      printTensorStats(x, name: "After decoder[\(i)]")
+      //printTensorStats(x, name: "After decoder[\(i)]")
     }
 
     var shape = x.shape

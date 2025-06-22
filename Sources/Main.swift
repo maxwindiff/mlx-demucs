@@ -145,29 +145,6 @@ struct Main: ParsableCommand {
     return model
   }
 
-  func printModelStats(_ model: DemucsModel) {
-    print("\n=== Model Layer Statistics ===")
-
-    let parameters = model.parameters().flattened()
-
-    for (name, param) in parameters {
-      let shape = param.shape
-      let mean = MLX.mean(param)
-      let variance = MLX.variance(param)
-
-      let flattenedParam = param.flattened()
-      let numElements = min(5, flattenedParam.size)
-      let firstElements = Array(0..<numElements).map { flattenedParam[MLXArray($0)].item(Float.self) }
-
-      print("Layer: \(name)")
-      print("  Shape: (\(shape.map(String.init).joined(separator: ", ")))")
-      print(String(format: "  Mean: %.6f, Variance: %.6f", mean.item(Float.self), variance.item(Float.self)))
-      print("  First elements: [\(firstElements.map { String(format: "%.6f", $0) }.joined(separator: ", "))]")
-      print("--------------------------------------------------")
-    }
-    print()
-  }
-
   func playAudio(from path: String, duration: TimeInterval = 10.0) throws {
     let url = URL(fileURLWithPath: path)
     let audioFile = try AVAudioFile(forReading: url)
