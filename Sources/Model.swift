@@ -171,6 +171,24 @@ class DemucsModel: Module, UnaryLayer {
     ]
   }
 
+  public func validLength(_ length: Int, depth: Int = 6, kernelSize: Int = 8, context: Int = 3, stride: Int = 4) -> Int {
+    var length = length
+
+    // Forward pass through layers
+    for _ in 0..<depth {
+      length = Int(ceil(Double(length - kernelSize) / Double(stride))) + 1
+      length = max(1, length)
+      length += context - 1
+    }
+
+    // Backward pass through layers
+    for _ in 0..<depth {
+      length = (length - 1) * stride + kernelSize
+    }
+
+    return length
+  }
+
   func centerTrim(_ tensor: MLXArray, reference: MLXArray) -> MLXArray {
     let referenceSize = reference.dim(-2)
     let delta = tensor.dim(-2) - referenceSize
@@ -185,30 +203,51 @@ class DemucsModel: Module, UnaryLayer {
     return tensor[.ellipsis, startIdx..<endIdx, 0...]
   }
 
+  func printTensorStats(_ tensor: MLXArray, name: String) {
+    let shape = tensor.shape
+    let mean = MLX.mean(tensor)
+    let variance = MLX.variance(tensor)
+    let firstElements = tensor[0, 0..<10, 0]
+    let elementValues = (0..<min(10, firstElements.size)).map { i in
+      String(format: "% .6f", firstElements[i].item(Float.self))
+    }
+    print("Tensor: \(name)")
+    print("  Shape: (\(shape.map(String.init).joined(separator: ", ")))")
+    print(String(format: "  Mean: %.6f, Variance: %.6f", mean.item(Float.self), variance.item(Float.self)))
+    print("  First elements: [\(elementValues.joined(separator: ", "))]")
+    print("--------------------------------------------------")
+  }
+
   public func callAsFunction(_ x: MLXArray) -> MLXArray {
     var x = x
     var saved = [MLXArray]()
 
+    print("\n=== Forward Pass Statistics ===")
+    printTensorStats(x, name: "Input")
+
     for (i, encode) in encoder.enumerated() {
       x = encode(x)
-      print("After encoder[\(i)]: \(x.shape)")
+      printTensorStats(x, name: "After encoder[\(i)]")
       saved.append(x)
     }
 
     x = lstm(x)
-    print("After LSTM shape: \(x.shape)")
+    printTensorStats(x, name: "After LSTM")
 
     for (i, decode) in decoder.enumerated() {
       let skip = centerTrim(saved.removeLast(), reference: x)
       x = x + skip
+      printTensorStats(x, name: "After skip connection decoder[\(i)]")
       x = decode(x)
-      print("After decoder[\(i)]: \(x.shape)")
+      printTensorStats(x, name: "After decoder[\(i)]")
     }
 
     var shape = x.shape
     shape.removeLast()
     shape += [4, 2]
     x = x.reshaped(shape)
+    print()
+
     return x
   }
 }

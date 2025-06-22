@@ -10,7 +10,7 @@ struct Main: ParsableCommand {
   var modelPath = "/tmp/mlx/demucs.safetensors"
 
   @Option
-  var input: String = "input.wav"
+  var inputPath: String = "input.wav"
 
   @Option
   var outputDir: String = "output"
@@ -31,23 +31,26 @@ struct Main: ParsableCommand {
       throw NSError(domain: "AudioBuffer", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio buffer"])
     }
 
-    try audioFile.read(into: buffer)
+    print("Sample rate: \(audioFile.fileFormat.sampleRate) Hz")
+    print("Frame count: \(frameCount)")
 
+    try audioFile.read(into: buffer)
     guard let leftChannelData = buffer.floatChannelData?[0],
           let rightChannelData = buffer.floatChannelData?[1] else {
       throw NSError(domain: "AudioData", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get channel data"])
     }
-
     let sampleCount = Int(buffer.frameLength)
     var audioData = [Float]()
     audioData.reserveCapacity(sampleCount * 2)
 
     for i in 0..<sampleCount {
       audioData.append(leftChannelData[i])
+    }
+    for i in 0..<sampleCount {
       audioData.append(rightChannelData[i])
     }
 
-    let mlxArray = MLXArray(audioData, [1, sampleCount, 2])
+    let mlxArray = MLXArray(audioData, [2, sampleCount])
     return mlxArray
   }
 
@@ -92,10 +95,6 @@ struct Main: ParsableCommand {
 
   func loadModel(from path: String) throws -> DemucsModel {
     let weights = try loadArrays(url: URL(fileURLWithPath: path))
-//    print("== weights ==")
-//    for key in weights.keys.sorted() {
-//      print("\(key): \(weights[key]!.shape)")
-//    }
 
     var transformed = [String: MLXArray]()
     for var (key, value) in weights {
@@ -140,23 +139,97 @@ struct Main: ParsableCommand {
     }
 
     let model = DemucsModel()
-//    print("== model ==")
-//    for (key, value) in model.parameters().flattened() {
-//      print("\(key): \(value.shape)")
-//    }
 
     let parameters = ModuleParameters.unflattened(transformed)
     try model.update(parameters: parameters, verify: [.all])
     return model
   }
 
+  func printModelStats(_ model: DemucsModel) {
+    print("\n=== Model Layer Statistics ===")
+
+    let parameters = model.parameters().flattened()
+
+    for (name, param) in parameters {
+      let shape = param.shape
+      let mean = MLX.mean(param)
+      let variance = MLX.variance(param)
+
+      let flattenedParam = param.flattened()
+      let numElements = min(5, flattenedParam.size)
+      let firstElements = Array(0..<numElements).map { flattenedParam[MLXArray($0)].item(Float.self) }
+
+      print("Layer: \(name)")
+      print("  Shape: (\(shape.map(String.init).joined(separator: ", ")))")
+      print(String(format: "  Mean: %.6f, Variance: %.6f", mean.item(Float.self), variance.item(Float.self)))
+      print("  First elements: [\(firstElements.map { String(format: "%.6f", $0) }.joined(separator: ", "))]")
+      print("--------------------------------------------------")
+    }
+    print()
+  }
+
+  func playAudio(from path: String, duration: TimeInterval = 10.0) throws {
+    let url = URL(fileURLWithPath: path)
+    let audioFile = try AVAudioFile(forReading: url)
+
+    let engine = AVAudioEngine()
+    let playerNode = AVAudioPlayerNode()
+
+    engine.attach(playerNode)
+    engine.connect(playerNode, to: engine.mainMixerNode, format: audioFile.processingFormat)
+
+    try engine.start()
+
+    let sampleRate = audioFile.processingFormat.sampleRate
+    let framesToPlay = AVAudioFrameCount(duration * sampleRate)
+    let actualFramesToPlay = min(framesToPlay, AVAudioFrameCount(audioFile.length))
+
+    guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: actualFramesToPlay) else {
+      throw NSError(domain: "AudioBuffer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create buffer"])
+    }
+
+    try audioFile.read(into: buffer, frameCount: actualFramesToPlay)
+
+    print("Playing first \(duration) seconds of vocals (left channel)...")
+
+    playerNode.scheduleBuffer(buffer, at: nil, options: []) {
+      print("Playback completed.")
+    }
+
+    playerNode.play()
+
+    let playbackDuration = Double(actualFramesToPlay) / sampleRate
+    Thread.sleep(forTimeInterval: playbackDuration + 0.5)
+
+    engine.stop()
+  }
+
   mutating func run() {
     do {
       let model = try loadModel(from: modelPath)
 
-      let data = try loadWavFile(from: input)
-      print("Input shape: \(data.shape)")
-      let output = model(data)
+      let input = try loadWavFile(from: inputPath)
+      print("Input shape: \(input.shape)")
+
+      // Normalize input
+      let ref = input.mean(axis: 0)
+      let refMean = ref.mean()
+      let refStd = MLX.sqrt(ref.variance())
+      print("ref.shape = \(ref.shape) refMean = \(refMean), refStd = \(refStd)")
+      let normalizedInput = (input - refMean) / refStd
+
+      // Padd input
+      let currentLength = normalizedInput.shape[1]
+      let totalPadding = model.validLength(currentLength) - currentLength
+      let leftPad = totalPadding / 2
+      let rightPad = totalPadding - leftPad
+      let paddedInput = MLX.concatenated([MLXArray.zeros([2, leftPad]), normalizedInput, MLXArray.zeros([2, rightPad])], axis: 1)
+
+      let permutedInput = paddedInput.expandedDimensions(axis: 0).transposed(axes: [0, 2, 1])
+
+      var output = model(permutedInput)
+      // Un-normalize output
+      output = output * refStd + refMean
       print("Output shape: \(output.shape)")
 
       let outputShape = output.shape
@@ -168,8 +241,7 @@ struct Main: ParsableCommand {
       let instrumentNames = ["drums", "bass", "other", "vocals"]
 
       try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
-
-      for instrument in 0..<numInstruments {
+      for instrument in 3..<numInstruments {  // only save vocals for now
         let instrumentData = output[0, 0..., instrument, 0...]
         let instrumentName = instrument < instrumentNames.count ? instrumentNames[instrument] : "instrument_\(instrument)"
 
@@ -184,8 +256,11 @@ struct Main: ParsableCommand {
 
         print("Saved \(instrumentName) left channel to \(leftOutputPath)")
         print("Saved \(instrumentName) right channel to \(rightOutputPath)")
-      }
 
+        if instrumentName == "vocals" {
+          try playAudio(from: leftOutputPath, duration: 3)
+        }
+      }
     } catch {
       print("Error running model: \(error)")
     }
