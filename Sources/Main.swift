@@ -112,54 +112,11 @@ struct Main: ParsableCommand {
     engine.stop()
   }
 
-  func loadModel(from path: String) throws -> DemucsModel {
-    let weights = try loadArrays(url: URL(fileURLWithPath: path))
-
-    // Convert pytorch names to our names, transpose as needed.
-    var transformed = [String: MLXArray]()
-    for var (key, value) in weights {
-      if let match = key.wholeMatch(of: /encoder\.(\d+)\.0\.weight/) {
-        key = "encoder.\(match.1).conv1.weight"
-        value = value.transposed(0, 2, 1)
-      } else if let match = key.wholeMatch(of: /encoder\.(\d+)\.2\.weight/) {
-        key = "encoder.\(match.1).conv2.weight"
-        value = value.transposed(0, 2, 1)
-      } else if let match = key.wholeMatch(of: /decoder\.(\d+)\.0\.weight/) {
-        key = "decoder.\(match.1).conv.weight"
-        value = value.transposed(0, 2, 1)
-      } else if let match = key.wholeMatch(of: /decoder\.(\d+)\.2\.weight/) {
-        key = "decoder.\(match.1).convTranspose.weight"
-        value = value.transposed(1, 2, 0)
-      } else if let match = key.wholeMatch(of: /encoder\.(\d+)\.0\.bias/) {
-        key = "encoder.\(match.1).conv1.bias"
-      } else if let match = key.wholeMatch(of: /encoder\.(\d+)\.2\.bias/) {
-        key = "encoder.\(match.1).conv2.bias"
-      } else if let match = key.wholeMatch(of: /decoder\.(\d+)\.0\.bias/) {
-        key = "decoder.\(match.1).conv.bias"
-      } else if let match = key.wholeMatch(of: /decoder\.(\d+)\.2\.bias/) {
-        key = "decoder.\(match.1).convTranspose.bias"
-      } else if key.hasPrefix("lstm.lstm.") {
-        let suffix = String(key.dropFirst("lstm.lstm.".count))
-        var components = suffix.components(separatedBy: "_")
-        let isReverse = components.last == "reverse"
-        if isReverse {
-          components.removeLast()
-        }
-        guard let layerComponent = components.last,
-              layerComponent.hasPrefix("l"),
-              let layerNumber = Int(String(layerComponent.dropFirst())) else {
-          continue
-        }
-        components.removeLast()
-        let paramType = components.joined(separator: "_")
-        let direction = isReverse ? "backward" : "forward"
-        key = "lstm.\(direction).\(layerNumber).\(paramType)"
-      }
-      transformed[key] = value
-    }
-
-    let model = DemucsModel()
-    try model.update(parameters: ModuleParameters.unflattened(transformed), verify: [.all])
+  func loadModel(from path: String) throws -> Demucs {
+    var weights = try loadArrays(url: URL(fileURLWithPath: path))
+    weights = Demucs.transformPytorch(weights)
+    let model = Demucs()
+    try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
     return model
   }
 

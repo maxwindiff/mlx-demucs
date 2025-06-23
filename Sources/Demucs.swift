@@ -146,7 +146,7 @@ class DecoderBlock: Module, UnaryLayer {
   }
 }
 
-class DemucsModel: Module, UnaryLayer {
+class Demucs: Module, UnaryLayer {
   let encoder: [EncoderBlock]
   let lstm: BLSTM
   let decoder: [DecoderBlock]
@@ -169,6 +169,51 @@ class DemucsModel: Module, UnaryLayer {
       DecoderBlock(inChannels: 128, outChannels: 64),
       DecoderBlock(inChannels: 64, outChannels: 8, isLast: true),
     ]
+  }
+
+  static func transformPytorch(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+    var transformed = [String: MLXArray]()
+    for var (key, value) in weights {
+      if let match = key.wholeMatch(of: /encoder\.(\d+)\.0\.weight/) {
+        key = "encoder.\(match.1).conv1.weight"
+        value = value.transposed(0, 2, 1)
+      } else if let match = key.wholeMatch(of: /encoder\.(\d+)\.2\.weight/) {
+        key = "encoder.\(match.1).conv2.weight"
+        value = value.transposed(0, 2, 1)
+      } else if let match = key.wholeMatch(of: /decoder\.(\d+)\.0\.weight/) {
+        key = "decoder.\(match.1).conv.weight"
+        value = value.transposed(0, 2, 1)
+      } else if let match = key.wholeMatch(of: /decoder\.(\d+)\.2\.weight/) {
+        key = "decoder.\(match.1).convTranspose.weight"
+        value = value.transposed(1, 2, 0)
+      } else if let match = key.wholeMatch(of: /encoder\.(\d+)\.0\.bias/) {
+        key = "encoder.\(match.1).conv1.bias"
+      } else if let match = key.wholeMatch(of: /encoder\.(\d+)\.2\.bias/) {
+        key = "encoder.\(match.1).conv2.bias"
+      } else if let match = key.wholeMatch(of: /decoder\.(\d+)\.0\.bias/) {
+        key = "decoder.\(match.1).conv.bias"
+      } else if let match = key.wholeMatch(of: /decoder\.(\d+)\.2\.bias/) {
+        key = "decoder.\(match.1).convTranspose.bias"
+      } else if key.hasPrefix("lstm.lstm.") {
+        let suffix = String(key.dropFirst("lstm.lstm.".count))
+        var components = suffix.components(separatedBy: "_")
+        let isReverse = components.last == "reverse"
+        if isReverse {
+          components.removeLast()
+        }
+        guard let layerComponent = components.last,
+              layerComponent.hasPrefix("l"),
+              let layerNumber = Int(String(layerComponent.dropFirst())) else {
+          continue
+        }
+        components.removeLast()
+        let paramType = components.joined(separator: "_")
+        let direction = isReverse ? "backward" : "forward"
+        key = "lstm.\(direction).\(layerNumber).\(paramType)"
+      }
+      transformed[key] = value
+    }
+    return transformed
   }
 
   func idealLength(_ length: Int, depth: Int = 6, kernelSize: Int = 8, context: Int = 3, stride: Int = 4) -> Int {
