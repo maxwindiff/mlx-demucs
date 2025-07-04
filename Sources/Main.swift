@@ -8,16 +8,24 @@ enum DemucsError: Error {
   case error(String)
 }
 
+enum ModelType: String, CaseIterable, ExpressibleByArgument {
+  case demucs = "demucs"
+  case hdemucs = "hdemucs"
+}
+
 @main
 struct Main: ParsableCommand {
   @Option
-  var modelPath = "/tmp/mlx/demucs.safetensors"
+  var modelPath = "/tmp/mlx/hdemucs.safetensors"
 
   @Option
   var inputPath: String = "input.wav"
 
   @Option
   var outputDir: String = "output"
+
+  @Option
+  var modelType: ModelType = .hdemucs
 
   func loadWavFile(from path: String) throws -> MLXArray {
     let url = URL(fileURLWithPath: path)
@@ -112,12 +120,29 @@ struct Main: ParsableCommand {
     engine.stop()
   }
 
-  func loadModel(from path: String) throws -> Demucs {
+  func loadModel(from path: String) throws -> any UnaryLayer {
     var weights = try loadArrays(url: URL(fileURLWithPath: path))
-    weights = Demucs.transformPytorch(weights)
-    let model = Demucs()
-    try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
-    return model
+
+    switch modelType {
+    case .demucs:
+      weights = Demucs.transformPytorch(weights)
+      let model = Demucs()
+      try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
+      return model
+    case .hdemucs:
+      weights = HDemucs.transformPytorch(weights)
+      let model = HDemucs()
+      print("Pytorch:")
+      for (key, value) in weights.sorted(by: { $0.key < $1.key }) {
+        print("- \(key): \(value.shape)")
+      }
+      print("\nMLX:")
+      for (key, value) in model.parameters().flattened().sorted(by: { $0.0 < $1.0 }) {
+        print("- \(key): \(value.shape)")
+      }
+      try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
+      return model
+    }
   }
 
   mutating func run() {
@@ -133,8 +158,17 @@ struct Main: ParsableCommand {
       let refMean = ref.mean()
       let refStd = MLX.sqrt(ref.variance())
       let normalizedInput = (input - refMean) / refStd
+
       // Pad (center) input so that no truncation happens during model execution
-      let paddedInput = model.padInput(normalizedInput)
+      let paddedInput: MLXArray
+      if let demucsModel = model as? Demucs {
+        paddedInput = demucsModel.padInput(normalizedInput)
+      } else if let hdemucsModel = model as? HDemucs {
+        paddedInput = hdemucsModel.padInput(normalizedInput)
+      } else {
+        throw DemucsError.error("Unknown model type")
+      }
+
       // Permute [channels, samples] to [batch=1, samples, channels]
       let permutedInput = paddedInput.expandedDimensions(axis: 0).transposed(axes: [0, 2, 1])
       // Run model
