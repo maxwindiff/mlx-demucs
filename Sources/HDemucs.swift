@@ -96,21 +96,48 @@ class DConv: Module, UnaryLayer {
 }
 
 class HEncLayer: Module, UnaryLayer {
-  let conv: Conv2d
+  let conv: any UnaryLayer
   let norm1: any UnaryLayer
-  let rewrite: Conv2d
+  let rewrite: any UnaryLayer
   let norm2: any UnaryLayer
   let dconv: DConv
 
-  init(inChannels: Int, outChannels: Int, useNorm: Bool = false, useLSTM: Bool = false) {
-    self.conv = Conv2d(
-      inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 4, padding: 2)
+  init(
+    inChannels: Int,
+    outChannels: Int,
+    useNorm: Bool = false,
+    useLSTM: Bool = false,
+    pad: Bool = true,
+    last: Bool = false,
+  ) {
+    let kernelSize = last ? 4 : 8
+    let stride = last ? 2 : 4
+    let padding = pad ? 2 : 0
+
+    if last {
+      self.conv = Conv1d(
+        inputChannels: inChannels,
+        outputChannels: outChannels,
+        kernelSize: kernelSize,
+        stride: stride,
+        padding: padding)
+      self.rewrite = Conv1d(
+        inputChannels: outChannels, outputChannels: outChannels * 2, kernelSize: 1, stride: 1)
+    } else {
+      self.conv = Conv2d(
+        inputChannels: inChannels,
+        outputChannels: outChannels,
+        kernelSize: [kernelSize, 1],
+        stride: [stride, 1],
+        padding: [padding, 0])
+      self.rewrite = Conv2d(
+        inputChannels: outChannels, outputChannels: outChannels * 2, kernelSize: 1, stride: 1)
+    }
+
     self.norm1 = useNorm ? GroupNorm(groupCount: 4, dimensions: outChannels, eps: 1e-5) : Identity()
-    self.rewrite = Conv2d(
-      inputChannels: outChannels, outputChannels: outChannels * 2, kernelSize: 1, stride: 1)
     self.norm2 =
       useNorm ? GroupNorm(groupCount: 4, dimensions: outChannels * 2, eps: 1e-5) : Identity()
-    self.dconv = DConv(channels: outChannels * 2, useLSTM: useLSTM)
+    self.dconv = DConv(channels: outChannels, useLSTM: useLSTM)
   }
 
   func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -124,21 +151,35 @@ class HEncLayer: Module, UnaryLayer {
 }
 
 class HEncLayer1D: Module, UnaryLayer {
-  let conv: Conv1d
+  let conv: any UnaryLayer
   let norm1: any UnaryLayer
-  let rewrite: Conv1d
+  let rewrite: any UnaryLayer
   let norm2: any UnaryLayer
-  let dconv: DConv
+  let dconv: any UnaryLayer
 
-  init(inChannels: Int, outChannels: Int, useNorm: Bool = false, useLSTM: Bool = false) {
+  init(
+    inChannels: Int,
+    outChannels: Int,
+    useNorm: Bool = false,
+    useLSTM: Bool = false,
+    last: Bool = false,
+  ) {
     self.conv = Conv1d(
       inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 4, padding: 2)
-    self.norm1 = useNorm ? GroupNorm(groupCount: 4, dimensions: outChannels, eps: 1e-5) : Identity()
-    self.rewrite = Conv1d(
-      inputChannels: outChannels, outputChannels: outChannels * 2, kernelSize: 1, stride: 1)
-    self.norm2 =
-      useNorm ? GroupNorm(groupCount: 4, dimensions: outChannels * 2, eps: 1e-5) : Identity()
-    self.dconv = DConv(channels: outChannels * 2, useLSTM: useLSTM)
+    if last {
+      self.norm1 = Identity()
+      self.rewrite = Identity()
+      self.norm2 = Identity()
+      self.dconv = Identity()
+    } else {
+      self.norm1 =
+        useNorm ? GroupNorm(groupCount: 4, dimensions: outChannels, eps: 1e-5) : Identity()
+      self.rewrite = Conv1d(
+        inputChannels: outChannels, outputChannels: outChannels * 2, kernelSize: 1, stride: 1)
+      self.norm2 =
+        useNorm ? GroupNorm(groupCount: 4, dimensions: outChannels * 2, eps: 1e-5) : Identity()
+      self.dconv = DConv(channels: outChannels, useLSTM: useLSTM)
+    }
   }
 
   func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -152,18 +193,26 @@ class HEncLayer1D: Module, UnaryLayer {
 }
 
 class HDecLayer: Module, UnaryLayer {
-  let convTr: ConvTransposed2d
+  let convTr: UnaryLayer
   let norm2: any UnaryLayer
-  let rewrite: Conv2d
+  let rewrite: UnaryLayer
   let norm1: any UnaryLayer
 
-  init(inChannels: Int, outChannels: Int, useNorm: Bool = false) {
-    self.convTr = ConvTransposed2d(
-      inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 4)
+  init(inChannels: Int, outChannels: Int, useNorm: Bool = false, last: Bool = false) {
+    if last {
+      self.convTr = ConvTransposed1d(
+        inputChannels: inChannels, outputChannels: outChannels, kernelSize: 4, stride: 2)
+      self.rewrite = Conv1d(
+        inputChannels: inChannels, outputChannels: inChannels * 2, kernelSize: 3, stride: 1,
+        padding: 1)
+    } else {
+      self.convTr = ConvTransposed2d(
+        inputChannels: inChannels, outputChannels: outChannels, kernelSize: [8, 1], stride: [4, 1])
+      self.rewrite = Conv2d(
+        inputChannels: inChannels, outputChannels: inChannels * 2, kernelSize: 3, stride: 1,
+        padding: 1)
+    }
     self.norm2 = useNorm ? GroupNorm(groupCount: 4, dimensions: outChannels, eps: 1e-5) : Identity()
-    self.rewrite = Conv2d(
-      inputChannels: inChannels, outputChannels: inChannels * 2, kernelSize: 3, stride: 1,
-      padding: 1)
     self.norm1 =
       useNorm ? GroupNorm(groupCount: 4, dimensions: inChannels * 2, eps: 1e-5) : Identity()
   }
@@ -180,31 +229,32 @@ class HDecLayer: Module, UnaryLayer {
 class HDecLayer1D: Module, UnaryLayer {
   let convTr: ConvTransposed1d
   let norm2: any UnaryLayer
-  let rewrite: Conv1d
-  let norm1: any UnaryLayer
+  let rewrite: any UnaryLayer
 
-  init(inChannels: Int, outChannels: Int, useNorm: Bool = false) {
+  init(inChannels: Int, outChannels: Int, last: Bool = false) {
     self.convTr = ConvTransposed1d(
-      inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 4)
-    self.norm2 = useNorm ? GroupNorm(groupCount: 4, dimensions: outChannels, eps: 1e-5) : Identity()
-    self.rewrite = Conv1d(
-      inputChannels: inChannels, outputChannels: inChannels * 2, kernelSize: 3, stride: 1,
-      padding: 1)
-    self.norm1 =
-      useNorm ? GroupNorm(groupCount: 4, dimensions: inChannels * 2, eps: 1e-5) : Identity()
+      inputChannels: inChannels, outputChannels: outChannels, kernelSize: 8, stride: 2)
+    if last {
+      self.norm2 = GroupNorm(groupCount: 4, dimensions: outChannels, eps: 1e-5)
+      self.rewrite = Identity()
+    } else {
+      self.norm2 = Identity()
+      self.rewrite = Conv1d(
+        inputChannels: inChannels, outputChannels: inChannels * 2, kernelSize: 3, stride: 1,
+        padding: 1)
+    }
   }
 
   func callAsFunction(_ x: MLXArray) -> MLXArray {
     var x = convTr(x)
     x = norm2(x)
     x = rewrite(x)
-    x = norm1(x)
     return x
   }
 }
 
 class HDemucs: Module, UnaryLayer {
-  let encoder: [HEncLayer]
+  let encoder: [any UnaryLayer]
   let decoder: [any UnaryLayer]
   let tencoder: [any UnaryLayer]
   let tdecoder: [HDecLayer1D]
@@ -216,12 +266,12 @@ class HDemucs: Module, UnaryLayer {
       HEncLayer(inChannels: 48, outChannels: 96),
       HEncLayer(inChannels: 96, outChannels: 192),
       HEncLayer(inChannels: 192, outChannels: 384),
-      HEncLayer(inChannels: 384, outChannels: 768, useNorm: true, useLSTM: true),
-      HEncLayer(inChannels: 768, outChannels: 1536, useNorm: true, useLSTM: true),
+      HEncLayer(inChannels: 384, outChannels: 768, useNorm: true, useLSTM: true, pad: false),
+      HEncLayer(inChannels: 768, outChannels: 1536, useNorm: true, useLSTM: true, last: true)
     ]
 
     self.decoder = [
-      HDecLayer1D(inChannels: 1536, outChannels: 768, useNorm: true),
+      HDecLayer(inChannels: 1536, outChannels: 768, useNorm: true, last: true),
       HDecLayer(inChannels: 768, outChannels: 384, useNorm: true),
       HDecLayer(inChannels: 384, outChannels: 192),
       HDecLayer(inChannels: 192, outChannels: 96),
@@ -234,11 +284,11 @@ class HDemucs: Module, UnaryLayer {
       HEncLayer1D(inChannels: 48, outChannels: 96),
       HEncLayer1D(inChannels: 96, outChannels: 192),
       HEncLayer1D(inChannels: 192, outChannels: 384),
-      Conv1d(inputChannels: 384, outputChannels: 768, kernelSize: 8, stride: 4, padding: 2),
+      HEncLayer1D(inChannels: 384, outChannels: 768, last: true)
     ]
 
     self.tdecoder = [
-      HDecLayer1D(inChannels: 768, outChannels: 384, useNorm: true),
+      HDecLayer1D(inChannels: 768, outChannels: 384, last: true),
       HDecLayer1D(inChannels: 384, outChannels: 192),
       HDecLayer1D(inChannels: 192, outChannels: 96),
       HDecLayer1D(inChannels: 96, outChannels: 48),
@@ -250,10 +300,205 @@ class HDemucs: Module, UnaryLayer {
 
   static func transformPytorch(_ weights: [String: MLXArray]) -> [String: MLXArray] {
     var transformed = [String: MLXArray]()
-    for (key, value) in weights {
-      // TODO: Implement weight transformation for HDemucs
-      // This would handle the conversion from PyTorch weight format to MLX format
-      // Similar to Demucs.transformPytorch but adapted for HDemucs architecture
+
+    for var (key, value) in weights {
+      // Remove "models.0." prefix
+      if key.hasPrefix("models.0.") {
+        key = String(key.dropFirst("models.0.".count))
+      }
+
+      // Handle encoder layers
+      if let match = key.wholeMatch(of: /encoder\.(\d+)\.conv\.weight/) {
+        key = "encoder.\(match.1).conv.weight"
+        if value.ndim == 4 {
+          value = value.transposed(0, 2, 3, 1)
+        } else if value.ndim == 3 {
+          value = value.transposed(0, 2, 1)
+        }
+      } else if let match = key.wholeMatch(of: /encoder\.(\d+)\.rewrite\.weight/) {
+        key = "encoder.\(match.1).rewrite.weight"
+        if value.ndim == 4 {
+          value = value.transposed(0, 2, 3, 1)
+        } else if value.ndim == 3 {
+          value = value.transposed(0, 2, 1)
+        }
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.weight/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).weight"
+        if value.ndim >= 2 {
+          value = value.transposed(0, 2, 1)
+        }
+      } else if let match = key.wholeMatch(of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.bias/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).bias"
+      } else if let match = key.wholeMatch(of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.scale/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).scale"
+      }
+
+      // Handle decoder layers
+      else if let match = key.wholeMatch(of: /decoder\.(\d+)\.conv_tr\.weight/) {
+        key = "decoder.\(match.1).convTr.weight"
+        if value.ndim == 4 {
+          value = value.transposed(1, 2, 3, 0)
+        } else {
+          value = value.transposed(1, 2, 0)
+        }
+      } else if let match = key.wholeMatch(of: /decoder\.(\d+)\.conv_tr\.bias/) {
+        key = "decoder.\(match.1).convTr.bias"
+      } else if let match = key.wholeMatch(of: /decoder\.(\d+)\.rewrite\.weight/) {
+        key = "decoder.\(match.1).rewrite.weight"
+        if value.ndim == 4 {
+          value = value.transposed(0, 2, 3, 1)
+        } else if value.ndim == 3 {
+          value = value.transposed(0, 2, 1)
+        }
+      }
+
+      // Handle temporal encoder layers
+      else if let match = key.wholeMatch(of: /tencoder\.(\d+)\.conv\.weight/) {
+        key = "tencoder.\(match.1).conv.weight"
+        if value.ndim == 3 {
+          value = value.transposed(0, 2, 1)
+        }
+      } else if let match = key.wholeMatch(of: /tencoder\.(\d+)\.rewrite\.weight/) {
+        key = "tencoder.\(match.1).rewrite.weight"
+        if value.ndim == 3 {
+          value = value.transposed(0, 2, 1)
+        }
+      } else if let match = key.wholeMatch(of: /tencoder\.(\d+)\.weight/) {
+        key = "tencoder.\(match.1).weight"
+        if value.ndim == 3 {
+          value = value.transposed(0, 2, 1)
+        }
+      } else if let match = key.wholeMatch(of: /tencoder\.(\d+)\.bias/) {
+        key = "tencoder.\(match.1).bias"
+      }
+
+      // Handle temporal decoder layers
+      else if let match = key.wholeMatch(of: /tdecoder\.(\d+)\.conv_tr\.weight/) {
+        key = "tdecoder.\(match.1).convTr.weight"
+        if value.ndim == 3 {
+          value = value.transposed(1, 2, 0)
+        }
+      } else if let match = key.wholeMatch(of: /tdecoder\.(\d+)\.conv_tr\.bias/) {
+        key = "tdecoder.\(match.1).convTr.bias"
+      } else if let match = key.wholeMatch(of: /tdecoder\.(\d+)\.rewrite\.weight/) {
+        key = "tdecoder.\(match.1).rewrite.weight"
+        if value.ndim == 3 {
+          value = value.transposed(0, 2, 1)
+        }
+      }
+
+      // Handle frequency embedding
+      else if key == "freq_emb.embedding.weight" {
+        key = "freqEmb.embedding.weight"
+      }
+
+      // Handle LSTM layers
+      else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.lstm\.weight_ih_l(\d+)(_reverse)?/)
+      {
+        let direction = match.5 != nil ? "backward" : "forward"
+        let layer = match.4
+        key =
+          "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).\(direction).\(layer).weight_ih"
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.lstm\.weight_hh_l(\d+)(_reverse)?/)
+      {
+        let direction = match.5 != nil ? "backward" : "forward"
+        let layer = match.4
+        key =
+          "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).\(direction).\(layer).weight_hh"
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.lstm\.bias_ih_l(\d+)(_reverse)?/)
+      {
+        let direction = match.5 != nil ? "backward" : "forward"
+        let layer = match.4
+        key =
+          "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).\(direction).\(layer).bias_ih"
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.lstm\.bias_hh_l(\d+)(_reverse)?/)
+      {
+        let direction = match.5 != nil ? "backward" : "forward"
+        let layer = match.4
+        key =
+          "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).\(direction).\(layer).bias_hh"
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.linear\.weight/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).linear.weight"
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.linear\.bias/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).linear.bias"
+      }
+
+      // Handle LocalState layers
+      else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.content\.weight/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).content.weight"
+        value = value.transposed(0, 2, 1)
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.content\.bias/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).content.bias"
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.query\.weight/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).query.weight"
+        value = value.transposed(0, 2, 1)
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.query\.bias/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).query.bias"
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.key\.weight/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).key.weight"
+        value = value.transposed(0, 2, 1)
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.key\.bias/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).key.bias"
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.query_decay\.weight/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).queryDecay.weight"
+        value = value.transposed(0, 2, 1)
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.query_decay\.bias/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).queryDecay.bias"
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.proj\.weight/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).proj.weight"
+        value = value.transposed(0, 2, 1)
+      } else if let match = key.wholeMatch(
+        of: /encoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.proj\.bias/)
+      {
+        key = "encoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).proj.bias"
+      }
+
+      // Handle temporal encoder DConv layers
+      else if let match = key.wholeMatch(of: /tencoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.weight/)
+      {
+        key = "tencoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).weight"
+        if value.ndim >= 2 {
+          value = value.transposed(0, 2, 1)
+        }
+      } else if let match = key.wholeMatch(of: /tencoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.bias/)
+      {
+        key = "tencoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).bias"
+      } else if let match = key.wholeMatch(
+        of: /tencoder\.(\d+)\.dconv\.layers\.(\d+)\.(\d+)\.scale/)
+      {
+        key = "tencoder.\(match.1).dconv.layers.\(match.2).layers.\(match.3).scale"
+      }
+
       transformed[key] = value
     }
     return transformed

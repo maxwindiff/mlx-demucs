@@ -132,15 +132,27 @@ struct Main: ParsableCommand {
     case .hdemucs:
       weights = HDemucs.transformPytorch(weights)
       let model = HDemucs()
-      print("Pytorch:")
-      for (key, value) in weights.sorted(by: { $0.key < $1.key }) {
-        print("- \(key): \(value.shape)")
+      do {
+        try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
+      } catch {
+        print("Error updating model parameters: \(error)")
+        let modelParams = model.parameters().flattened().sorted(by: { $0.0 < $1.0 })
+        for (key, value) in weights.sorted(by: { $0.key < $1.key }) {
+          if let (_, modelParam) = modelParams.first(where: { $0.0 == key }) {
+            if modelParam.shape != value.shape {
+              print("Mismatch for \(key): got \(value.shape) want \(modelParam.shape)")
+            }
+          } else {
+            print("Weight \(key) not found in model, got \(value.shape)")
+          }
+        }
+        for (key, value) in modelParams {
+          if weights[key] == nil {
+            print("Model parameter \(key) not found in weights, want \(value.shape)")
+          }
+        }
+        throw error
       }
-      print("\nMLX:")
-      for (key, value) in model.parameters().flattened().sorted(by: { $0.0 < $1.0 }) {
-        print("- \(key): \(value.shape)")
-      }
-      try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
       return model
     }
   }
