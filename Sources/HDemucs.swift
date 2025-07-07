@@ -288,6 +288,85 @@ class HDemucs: Module, UnaryLayer {
     self.freq_emb = ScaledEmbedding(numEmbeddings: 512, embeddingDim: 48)
   }
 
+  func spec(_ x: MLXArray, hopLength: Int = 1024, nfft: Int = 4096) -> MLXArray {
+    // It's more convenient to transpose the time dimension to the last axis.
+    var x = x.transposed(0, 2, 1)
+
+    // Pad the signal so that size of output is exactly the same as the size of input divided by hopLength.
+    let length = x.dim(-1)
+    let numHops = Int(ceil(Double(length) / Double(hopLength)))
+    let pad = hopLength / 2 * 3
+    x = padReflect(x, axis: -1, paddings: (pad, pad + numHops * hopLength - length))
+
+    // Create Hann window
+    let window = MLXArray(
+      Array(0..<nfft).map { i in
+        0.5 * (1.0 - cos(2.0 * Float.pi * Float(i) / Float(nfft - 1)))
+      })
+
+    // Compute STFT
+    let numFrames = (x.dim(-1) - nfft) / hopLength + 1
+    let freqBins = nfft / 2  // Only positive frequencies are needed since input is real
+    let result = MLXArray.zeros(x.shape.dropLast() + [freqBins, numFrames])
+
+    // Process each frame
+    for frameIdx in 0..<numFrames {
+      let start = frameIdx * hopLength
+      let end = start + nfft
+      let frame = x[0..., 0..., start..<end] * window
+
+      // Take only positive frequencies
+      let fft = MLXFFT.fft(frame, axis: -1)
+      result[0..., 0..., 0..., frameIdx] = fft[0..., 0..., 0..<freqBins]
+    }
+
+    // Normalize
+    let norm = sqrt(Float(nfft))
+    return result / norm
+  }
+
+  public func callAsFunction(_ x: MLXArray) -> MLXArray {
+    var x = x
+    let z = spec(x)
+    print("x.shape:", x.shape, "z.shape:", z.shape)
+    exit(1)
+
+    var saved = [MLXArray]()
+
+    // Encoder pass
+    for encode in encoder {
+      x = encode(x)
+      saved.append(x)
+    }
+
+    // Decoder pass with skip connections
+    for decode in decoder {
+      let skip = centerTrim(saved.removeLast(), reference: x)
+      x = x + skip
+      x = decode(x)
+    }
+
+    // TODO: Add temporal encoder/decoder processing
+    // TODO: Add frequency embedding integration
+    // TODO: Add final output processing
+
+    return x
+  }
+
+  func centerTrim(_ tensor: MLXArray, reference: MLXArray) -> MLXArray {
+    let referenceSize = reference.dim(-2)
+    let delta = tensor.dim(-2) - referenceSize
+    if delta < 0 {
+      fatalError("tensor must be larger than reference. Delta is \(delta).")
+    }
+    if delta == 0 {
+      return tensor
+    }
+    let startIdx = delta / 2
+    let endIdx = tensor.dim(-2) - (delta - delta / 2)
+    return tensor[.ellipsis, startIdx..<endIdx, 0...]
+  }
+
   static func transformPytorch(_ weights: [String: MLXArray]) -> [String: MLXArray] {
     var transformed = [String: MLXArray]()
 
@@ -475,52 +554,5 @@ class HDemucs: Module, UnaryLayer {
       transformed[key] = value
     }
     return transformed
-  }
-
-
-  func centerTrim(_ tensor: MLXArray, reference: MLXArray) -> MLXArray {
-    let referenceSize = reference.dim(-2)
-    let delta = tensor.dim(-2) - referenceSize
-    if delta < 0 {
-      fatalError("tensor must be larger than reference. Delta is \(delta).")
-    }
-    if delta == 0 {
-      return tensor
-    }
-    let startIdx = delta / 2
-    let endIdx = tensor.dim(-2) - (delta - delta / 2)
-    return tensor[.ellipsis, startIdx..<endIdx, 0...]
-  }
-
-  public func callAsFunction(_ x: MLXArray) -> MLXArray {
-    // TODO: Implement full HDemucs forward pass
-    // This is a skeleton implementation - the actual forward pass would involve:
-    // 1. Processing through encoder layers with skip connections
-    // 2. Processing through decoder layers with skip connections
-    // 3. Processing through tencoder and tdecoder for temporal information
-    // 4. Combining frequency and temporal embeddings
-    // 5. Final output processing
-
-    var x = x
-    var saved = [MLXArray]()
-
-    // Encoder pass
-    for encode in encoder {
-      x = encode(x)
-      saved.append(x)
-    }
-
-    // Decoder pass with skip connections
-    for decode in decoder {
-      let skip = centerTrim(saved.removeLast(), reference: x)
-      x = x + skip
-      x = decode(x)
-    }
-
-    // TODO: Add temporal encoder/decoder processing
-    // TODO: Add frequency embedding integration
-    // TODO: Add final output processing
-
-    return x
   }
 }
