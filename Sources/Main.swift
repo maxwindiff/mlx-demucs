@@ -130,7 +130,7 @@ struct Main: ParsableCommand {
         path = "hdemucs.safetensors"
       }
     }
-    
+
     var weights = try loadArrays(url: URL(fileURLWithPath: path))
     var model: UnaryLayer
     switch modelType {
@@ -174,10 +174,15 @@ struct Main: ParsableCommand {
       print("Input shape: \(input.shape)")
       let startTime = CFAbsoluteTimeGetCurrent()
 
+      let ref = input.mean(axis: 0) // mean across channel
+      let refMean = ref.mean()
+      let refStd = MLX.sqrt(input.variance()) + 1e-8
+      let normalizedInput = (input - refMean) / refStd
+
       // Permute [channels, samples] to [batch=1, samples, channels]
-      let permutedInput = input.expandedDimensions(axis: 0).transposed(axes: [0, 2, 1])
-      // Run model
-      let output = model(permutedInput)
+      let permutedInput = normalizedInput.expandedDimensions(axis: 0).transposed(axes: [0, 2, 1])
+      var output = model(permutedInput)
+      output = output * refStd + refMean
 
       // Force evaluation
       eval(output)

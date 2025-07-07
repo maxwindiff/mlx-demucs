@@ -259,16 +259,7 @@ class Demucs: Module, UnaryLayer {
   }
 
   public func callAsFunction(_ x: MLXArray) -> MLXArray {
-    // Apply normalization - x has shape [batch, samples, channels]
-    let ref = x.mean(axes: [0, 1]) // mean across batch and samples, keeping channels
-    let refMean = ref.mean()
-    let refStd = MLX.sqrt(x.variance())
-    let normalizedInput = (x - refMean) / refStd
-    
-    // Pad input
-    let paddedInput = padInput(normalizedInput)
-    
-    var x = paddedInput
+    var x = padInput(x)
     var saved = [MLXArray]()
 
     for encode in encoder {
@@ -283,11 +274,6 @@ class Demucs: Module, UnaryLayer {
     }
 
     // Reshape to 4 sources x 2 channels
-    x = x.reshaped(x.shape.dropLast() + [4, 2])
-    
-    // Apply denormalization
-    x = x * refStd + refMean
-    
-    return x
+    return x.reshaped(x.shape.dropLast() + [4, 2])
   }
 }
