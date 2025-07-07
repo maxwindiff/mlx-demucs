@@ -477,32 +477,6 @@ class HDemucs: Module, UnaryLayer {
     return transformed
   }
 
-  func idealLength(
-    _ length: Int, depth: Int = 6, kernelSize: Int = 8, context: Int = 3, stride: Int = 4
-  ) -> Int {
-    var length = length
-
-    for _ in 0..<depth {
-      length = Int(ceil(Double(length - kernelSize) / Double(stride))) + 1
-      length = max(1, length)
-      length += context - 1
-    }
-
-    for _ in 0..<depth {
-      length = (length - 1) * stride + kernelSize
-    }
-
-    return length
-  }
-
-  func padInput(_ input: MLXArray) -> MLXArray {
-    let currentLength = input.shape[1]
-    let totalPadding = idealLength(currentLength) - currentLength
-    let leftPad = totalPadding / 2
-    let rightPad = totalPadding - leftPad
-    return MLX.concatenated(
-      [MLXArray.zeros([2, leftPad]), input, MLXArray.zeros([2, rightPad])], axis: 1)
-  }
 
   func centerTrim(_ tensor: MLXArray, reference: MLXArray) -> MLXArray {
     let referenceSize = reference.dim(-2)

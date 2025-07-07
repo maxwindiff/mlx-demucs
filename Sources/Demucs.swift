@@ -235,11 +235,13 @@ class Demucs: Module, UnaryLayer {
 
   // Pad the length so that no truncation happens during model execution.
   func padInput(_ input: MLXArray) -> MLXArray {
-    let currentLength = input.shape[1]
+    let currentLength = input.shape[1] // samples dimension
     let totalPadding = idealLength(currentLength) - currentLength
     let leftPad = totalPadding / 2
     let rightPad = totalPadding - leftPad
-    return MLX.concatenated([MLXArray.zeros([2, leftPad]), input, MLXArray.zeros([2, rightPad])], axis: 1)
+    let batchSize = input.shape[0]
+    let channels = input.shape[2]
+    return MLX.concatenated([MLXArray.zeros([batchSize, leftPad, channels]), input, MLXArray.zeros([batchSize, rightPad, channels])], axis: 1)
   }
 
   func centerTrim(_ tensor: MLXArray, reference: MLXArray) -> MLXArray {
@@ -257,7 +259,16 @@ class Demucs: Module, UnaryLayer {
   }
 
   public func callAsFunction(_ x: MLXArray) -> MLXArray {
-    var x = x
+    // Apply normalization - x has shape [batch, samples, channels]
+    let ref = x.mean(axes: [0, 1]) // mean across batch and samples, keeping channels
+    let refMean = ref.mean()
+    let refStd = MLX.sqrt(x.variance())
+    let normalizedInput = (x - refMean) / refStd
+    
+    // Pad input
+    let paddedInput = padInput(normalizedInput)
+    
+    var x = paddedInput
     var saved = [MLXArray]()
 
     for encode in encoder {
@@ -273,6 +284,10 @@ class Demucs: Module, UnaryLayer {
 
     // Reshape to 4 sources x 2 channels
     x = x.reshaped(x.shape.dropLast() + [4, 2])
+    
+    // Apply denormalization
+    x = x * refStd + refMean
+    
     return x
   }
 }

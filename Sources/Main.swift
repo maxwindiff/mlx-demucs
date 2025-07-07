@@ -16,16 +16,16 @@ enum ModelType: String, CaseIterable, ExpressibleByArgument {
 @main
 struct Main: ParsableCommand {
   @Option
-  var modelPath = "/tmp/mlx/hdemucs.safetensors"
+  var modelType: ModelType = .hdemucs
+
+  @Option
+  var modelPath = ""
 
   @Option
   var inputPath: String = "input.wav"
 
   @Option
   var outputDir: String = "output"
-
-  @Option
-  var modelType: ModelType = .hdemucs
 
   func loadWavFile(from path: String) throws -> MLXArray {
     let url = URL(fileURLWithPath: path)
@@ -120,73 +120,64 @@ struct Main: ParsableCommand {
     engine.stop()
   }
 
-  func loadModel(from path: String) throws -> any UnaryLayer {
+  func loadModel(type: ModelType, from path: String) throws -> any UnaryLayer {
+    var path = path
+    if path == "" {
+      switch type {
+      case .demucs:
+        path = "demucs.safetensors"
+      case .hdemucs:
+        path = "hdemucs.safetensors"
+      }
+    }
+    
     var weights = try loadArrays(url: URL(fileURLWithPath: path))
-
+    var model: UnaryLayer
     switch modelType {
     case .demucs:
       weights = Demucs.transformPytorch(weights)
-      let model = Demucs()
-      try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
-      return model
+      model = Demucs()
     case .hdemucs:
       weights = HDemucs.transformPytorch(weights)
-      let model = HDemucs()
-      do {
-        try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
-      } catch {
-        print("Error updating model parameters: \(error)")
-        let modelParams = model.parameters().flattened().sorted(by: { $0.0 < $1.0 })
-        for (key, value) in weights.sorted(by: { $0.key < $1.key }) {
-          if let (_, modelParam) = modelParams.first(where: { $0.0 == key }) {
-            if modelParam.shape != value.shape {
-              print("Mismatch for \(key): got \(value.shape) want \(modelParam.shape)")
-            }
-          } else {
-            print("Weight \(key) not found in model, got \(value.shape)")
-          }
-        }
-        for (key, value) in modelParams {
-          if weights[key] == nil {
-            print("Model parameter \(key) not found in weights, want \(value.shape)")
-          }
-        }
-        throw error
-      }
-      return model
+      model = HDemucs()
     }
+
+    do {
+      try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
+    } catch {
+      print("Error updating model parameters: \(error)")
+      let modelParams = model.parameters().flattened().sorted(by: { $0.0 < $1.0 })
+      for (key, value) in weights.sorted(by: { $0.key < $1.key }) {
+        if let (_, modelParam) = modelParams.first(where: { $0.0 == key }) {
+          if modelParam.shape != value.shape {
+            print("Mismatch for \(key): got \(value.shape) want \(modelParam.shape)")
+          }
+        } else {
+          print("Weight \(key) not found in model, got \(value.shape)")
+        }
+      }
+      for (key, value) in modelParams {
+        if weights[key] == nil {
+          print("Model parameter \(key) not found in weights, want \(value.shape)")
+        }
+      }
+      throw error
+    }
+    return model
   }
 
   mutating func run() {
     do {
-      let model = try loadModel(from: modelPath)
+      let model = try loadModel(type: modelType, from: modelPath)
 
       let input = try loadWavFile(from: inputPath)
       print("Input shape: \(input.shape)")
       let startTime = CFAbsoluteTimeGetCurrent()
 
-      // Normalize input
-      let ref = input.mean(axis: 0)
-      let refMean = ref.mean()
-      let refStd = MLX.sqrt(ref.variance())
-      let normalizedInput = (input - refMean) / refStd
-
-      // Pad (center) input so that no truncation happens during model execution
-      let paddedInput: MLXArray
-      if let demucsModel = model as? Demucs {
-        paddedInput = demucsModel.padInput(normalizedInput)
-      } else if let hdemucsModel = model as? HDemucs {
-        paddedInput = hdemucsModel.padInput(normalizedInput)
-      } else {
-        throw DemucsError.error("Unknown model type")
-      }
-
       // Permute [channels, samples] to [batch=1, samples, channels]
-      let permutedInput = paddedInput.expandedDimensions(axis: 0).transposed(axes: [0, 2, 1])
+      let permutedInput = input.expandedDimensions(axis: 0).transposed(axes: [0, 2, 1])
       // Run model
-      var output = model(permutedInput)
-      // Un-normalize output
-      output = output * refStd + refMean
+      let output = model(permutedInput)
 
       // Force evaluation
       eval(output)
