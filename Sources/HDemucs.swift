@@ -288,15 +288,16 @@ class HDemucs: Module, UnaryLayer {
     self.freq_emb = ScaledEmbedding(numEmbeddings: 512, embeddingDim: 48)
   }
 
-  func spec(_ x: MLXArray, hopLength: Int = 1024, nfft: Int = 4096) -> MLXArray {
+  func spec(_ x: MLXArray, nfft: Int = 4096) -> MLXArray {
     // It's more convenient to transpose the time dimension to the last axis.
     var x = x.transposed(0, 2, 1)
 
-    // Pad the signal so that size of output is exactly the same as the size of input divided by hopLength.
+    // Add padding to mimic torch.stft(center=True) + some padding behavior in hdemucs.py
     let length = x.dim(-1)
+    let hopLength = nfft / 4
     let numHops = Int(ceil(Double(length) / Double(hopLength)))
-    let pad = hopLength / 2 * 3
-    x = padReflect(x, axis: -1, paddings: (pad, pad + numHops * hopLength - length))
+    let pad = hopLength / 2 * 3  // TODO: why?
+    x = padReflect(x, axis: -1, paddings: (nfft/2 + pad, nfft/2 + pad + numHops*hopLength - length))
 
     // Create Hann window
     let window = MLXArray(
@@ -305,9 +306,9 @@ class HDemucs: Module, UnaryLayer {
       })
 
     // Compute STFT
-    let numFrames = (x.dim(-1) - nfft) / hopLength + 1
+    let numFrames = numHops + 4
     let freqBins = nfft / 2  // Only positive frequencies are needed since input is real
-    let result = MLXArray.zeros(x.shape.dropLast() + [freqBins, numFrames])
+    var result = MLXArray.zeros(x.shape.dropLast() + [freqBins, numFrames])
 
     // Process each frame
     for frameIdx in 0..<numFrames {
@@ -320,9 +321,9 @@ class HDemucs: Module, UnaryLayer {
       result[0..., 0..., 0..., frameIdx] = fft[0..., 0..., 0..<freqBins]
     }
 
-    // Normalize
-    let norm = sqrt(Float(nfft))
-    return result / norm
+    // Since we padded the input by nfft/2 on each side, need to throw out some frames.
+    result = result[.ellipsis, 2..<2+numHops]
+    return result / sqrt(Float(nfft))  // Normalize
   }
 
   public func callAsFunction(_ x: MLXArray) -> MLXArray {
