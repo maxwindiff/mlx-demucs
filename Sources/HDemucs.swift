@@ -289,28 +289,33 @@ class HDemucs: Module, UnaryLayer {
   }
 
   func spec(_ x: MLXArray, nfft: Int = 4096) -> MLXArray {
+    print("=== SPEC DEBUG ===")
+
     // It's more convenient to transpose the time dimension to the last axis.
     var x = x.transposed(0, 2, 1)
+    printDebug(x, "Input")
 
     // Add padding to mimic torch.stft(center=True) + some padding behavior in hdemucs.py
     let length = x.dim(-1)
     let hopLength = nfft / 4
     let numHops = Int(ceil(Double(length) / Double(hopLength)))
     let pad = hopLength / 2 * 3  // TODO: why?
-    x = padReflect(x, axis: -1, paddings: (nfft/2 + pad, nfft/2 + pad + numHops*hopLength - length))
+    x = padReflect(x, axis: -1, paddings: (pad, pad + numHops*hopLength - length))
+    printDebug(x, "Padded")
 
     // Create Hann window
     let window = MLXArray(
       Array(0..<nfft).map { i in
-        0.5 * (1.0 - cos(2.0 * Float.pi * Float(i) / Float(nfft - 1)))
+        0.5 * (1.0 - cos(2.0 * Float.pi * Float(i) / Float(nfft))) // Periodic window
       })
 
     // Compute STFT
-    let numFrames = numHops + 4
+    let numFrames = numHops + 4 - 8
     let freqBins = nfft / 2  // Only positive frequencies are needed since input is real
-    var result = MLXArray.zeros(x.shape.dropLast() + [freqBins, numFrames])
+    var result = MLXArray.zeros(x.shape.dropLast() + [freqBins, numFrames], dtype: .complex64)
 
     // Process each frame
+    x = padReflect(x, axis: -1, paddings: (nfft/2, nfft/2))  // Mimic center=True
     for frameIdx in 0..<numFrames {
       let start = frameIdx * hopLength
       let end = start + nfft
@@ -318,12 +323,17 @@ class HDemucs: Module, UnaryLayer {
 
       // Take only positive frequencies
       let fft = MLXFFT.fft(frame, axis: -1)
-      result[0..., 0..., 0..., frameIdx] = fft[0..., 0..., 0..<freqBins]
+      result[0..., 0..., 0..., frameIdx] = fft[0..., 0..., 0..<freqBins] / sqrt(Float(nfft))  // Mimic normalize=True
+      if frameIdx < 3 {
+        printDebug(result[0..., 0..., 0..., frameIdx], "Frame \(frameIdx)", decimals: 3)
+      }
     }
+    printDebug(result, "Untrimmed", decimals: 3)
 
     // Since we padded the input by nfft/2 on each side, need to throw out some frames.
     result = result[.ellipsis, 2..<2+numHops]
-    return result / sqrt(Float(nfft))  // Normalize
+    printDebug(result, "Trimmed", decimals: 3)
+    return result
   }
 
   public func callAsFunction(_ x: MLXArray) -> MLXArray {

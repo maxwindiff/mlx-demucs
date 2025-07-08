@@ -175,8 +175,8 @@ struct Main: ParsableCommand {
       let startTime = CFAbsoluteTimeGetCurrent()
 
       let ref = input.mean(axis: 0) // mean across channel
-      let refMean = ref.mean()
-      let refStd = MLX.sqrt(input.variance()) + 1e-8
+      let refMean = MLX.mean(ref)
+      let refStd = MLX.std(ref) + 1e-8
       let normalizedInput = (input - refMean) / refStd
 
       // Permute [channels, samples] to [batch=1, samples, channels]
